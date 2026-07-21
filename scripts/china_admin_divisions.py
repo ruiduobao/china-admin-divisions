@@ -131,7 +131,7 @@ def cmd_info(args: argparse.Namespace) -> int:
             level=args.level,
             year=args.year,
             expand_km=args.expand_km,
-            fetch_geojson=True,
+            fetch_geojson=not args.no_geojson,
         )
     except ac.AdminApiError as e:
         return _err(str(e))
@@ -150,7 +150,7 @@ def cmd_bbox(args: argparse.Namespace) -> int:
             level=args.level,
             year=args.year,
             expand_km=args.expand_km,
-            fetch_geojson=True,
+            fetch_geojson=not args.no_geojson,
         )
     except ac.AdminApiError as e:
         return _err(str(e))
@@ -171,10 +171,22 @@ def cmd_bbox(args: argparse.Namespace) -> int:
     )
 
 
-def cmd_download(args: argparse.Namespace) -> int:
-    fmt = (args.format or "gson").lower()
+def _normalize_format(fmt: str) -> str:
+    """Resolve legacy aliases (e.g. gson -> geojson) and validate."""
+    fmt = (fmt or "geojson").lower()
+    fmt = ac.FORMAT_ALIASES.get(fmt, fmt)
     if fmt not in ac.SUPPORTED_FORMATS:
-        return _err(f"Unsupported format {fmt!r}; supported={list(ac.SUPPORTED_FORMATS)}")
+        raise ac.AdminApiError(
+            f"Unsupported format {fmt!r}; supported={list(ac.SUPPORTED_FORMATS)}"
+        )
+    return fmt
+
+
+def cmd_download(args: argparse.Namespace) -> int:
+    try:
+        fmt = _normalize_format(args.format or "geojson")
+    except ac.AdminApiError as e:
+        return _err(str(e))
     if not args.name and not args.code:
         return _err("Provide --name or --code")
     try:
@@ -218,9 +230,10 @@ def cmd_download(args: argparse.Namespace) -> int:
 
 
 def cmd_download_children(args: argparse.Namespace) -> int:
-    fmt = (args.format or "shp").lower()
-    if fmt not in ac.SUPPORTED_FORMATS:
-        return _err(f"Unsupported format {fmt!r}; supported={list(ac.SUPPORTED_FORMATS)}")
+    try:
+        fmt = _normalize_format(args.format or "shp")
+    except ac.AdminApiError as e:
+        return _err(str(e))
     try:
         rows = ac.list_children(
             province=args.province,
@@ -349,6 +362,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--level")
     sp.add_argument("--expand-km", type=float, default=ac.DEFAULT_EXPAND_KM,
                     help=f"扩展 bbox 的距离（km），默认 {ac.DEFAULT_EXPAND_KM}")
+    sp.add_argument("--no-geojson", action="store_true",
+                    help="不下载 geojson（仅返回元信息；乡/村级 code 适用）")
     _common_admin_args(sp)
     sp.set_defaults(func=cmd_info)
 
@@ -360,17 +375,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--city")
     sp.add_argument("--level")
     sp.add_argument("--expand-km", type=float, default=ac.DEFAULT_EXPAND_KM)
+    sp.add_argument("--no-geojson", action="store_true",
+                    help="不下载 geojson（仅返回元信息）")
     _common_admin_args(sp)
     sp.set_defaults(func=cmd_bbox)
 
     # download
+    # `choices` includes the legacy `gson` alias so existing scripts don't
+    # break. The actual download normalises it to `geojson`.
     sp = sub.add_parser("download", help="下载单个区划矢量")
     sp.add_argument("--name")
     sp.add_argument("--code")
     sp.add_argument("--province")
     sp.add_argument("--city")
     sp.add_argument("--level")
-    sp.add_argument("--format", choices=ac.SUPPORTED_FORMATS, default="gson")
+    sp.add_argument("--format", choices=list(ac.SUPPORTED_FORMATS) + list(ac.FORMAT_ALIASES),
+                    default="geojson")
     sp.add_argument("--out", help="输出文件路径")
     _common_admin_args(sp)
     sp.set_defaults(func=cmd_download)
@@ -387,7 +407,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--level", required=True,
         choices=["shi", "xian", "xiang", "cun"],
     )
-    sp.add_argument("--format", choices=ac.SUPPORTED_FORMATS, default="shp")
+    sp.add_argument("--format",
+                    choices=list(ac.SUPPORTED_FORMATS) + list(ac.FORMAT_ALIASES),
+                    default="shp")
     sp.add_argument("--out", help="输出目录")
     _common_admin_args(sp)
     sp.set_defaults(func=cmd_download_children)

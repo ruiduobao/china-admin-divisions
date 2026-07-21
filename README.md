@@ -22,6 +22,9 @@ python scripts/china_admin_divisions.py info --code 510104 --expand-km 1
 # 下载单个矢量
 python scripts/china_admin_divisions.py download --code 510104 --format shp --out jinjiang.zip
 
+# 乡/村级 code 通常没有面边界；跳过矢量拉取仅取元信息
+python scripts/china_admin_divisions.py info --code 510104017 --no-geojson
+
 # 批量下载某省所有市
 python scripts/china_admin_divisions.py download-children \
     --province 四川省 --level shi --format shp --out ./sichuan_shp

@@ -1,7 +1,7 @@
 ---
 name: china-admin-divisions
 display_name: 中国行政区划下载
-version: 0.1.0
+version: 0.1.1
 author: Mavis
 description: |
   Download Chinese administrative-division vector data (province / city /
@@ -37,9 +37,12 @@ python scripts/china_admin_divisions.py info --code 510104 --expand-km 1
 python scripts/china_admin_divisions.py bbox --name 海淀区 --province 北京市 --expand-km 2
 
 # 4) 下载单个矢量
-python scripts/china_admin_divisions.py download --code 510104 --format gson
+python scripts/china_admin_divisions.py download --code 510104 --format geojson
 python scripts/china_admin_divisions.py download --code 510104 --format shp --out jinjiang.zip
 python scripts/china_admin_divisions.py download --code 510104 --format kml
+
+# 4b) 乡/村级 code 没有 geojson 边界？跳过拉取，仅返回元信息
+python scripts/china_admin_divisions.py info --code 510104017 --no-geojson
 
 # 5) 批量下载某省所有市
 python scripts/china_admin_divisions.py download-children \
@@ -64,7 +67,7 @@ python scripts/china_admin_divisions.py download-children \
 
 | `--format` | 输出后缀 | 备注 |
 |---|---|---|
-| `gson` | `.geojson` | 标准 GeoJSON，单文件 |
+| `geojson` | `.geojson` | 标准 GeoJSON，单文件（`gson` 是历史别名，仍可用） |
 | `shp` | `.zip` | ESRI Shapefile（zip 内含 .shp/.shx/.dbf/.prj） |
 | `kml` | `.kml` | Google Earth |
 | `gpkg` | `.gpkg` | GeoPackage，OGC 标准 |
@@ -83,11 +86,14 @@ python scripts/china_admin_divisions.py download-children \
 
 - 1 km bbox 扩展使用平面近似（`1° lat ≈ 110.574 km`，`1° lon ≈ 111.320·cos(mid_lat) km`）。
   极地 / 跨 180° 经线会失真，五级区划范围通常不会触发。
-- 乡/村级 API 不一定提供 gsonDB（12 位编码），元信息会回退到
-  `downloadVector` 通道；如该区在 API 端没有面边界，`info` 会报错。
+- 乡/村级 code（9/12 位）在上游 API 端**可能没有面边界**。默认情况下
+  `info` 仍会返回 `name/code/level/province/city/...` 元信息，但
+  `bbox_wgs84` / `area_km2` 为 `null`，并带 `vector_available: false`
+  + `vector_error` 字段。也可以用 `--no-geojson` 完全跳过矢量拉取。
 - 瑞朵豹 API 是免费公共服务，调用请勿过频。
 - 默认所有网络调用**不走代理**（瑞朵豹在国内 + VPN 不稳）。如确实需要代理请设置
   `RUIDUOBAO_USE_PROXY=1`。
+- `--format` 历史别名：`gson` 等价于 `geojson`，仍可继续使用以兼容旧脚本。
 
 ## Output Contract
 
@@ -105,6 +111,10 @@ python scripts/china_admin_divisions.py download-children \
   "bbox_wgs84": [104.05, 30.62, 104.16, 30.71],
   "bbox_wgs84_expanded": [104.04, 30.61, 104.17, 30.72],
   "area_km2": 60.32,
-  "area_km2_expanded": 76.18
+  "area_km2_expanded": 76.18,
+  "vector_available": true
 }
 ```
+
+乡/村级（无矢量边界）时：`bbox_wgs84` / `area_km2` 为 `null`，并附
+`vector_available: false` 与 `vector_error: "..."` 字段；退出码仍为 0。

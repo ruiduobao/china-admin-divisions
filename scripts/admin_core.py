@@ -15,17 +15,13 @@ directly. Set ``RUIDUOBAO_USE_PROXY=1`` to force the system proxy.
 
 from __future__ import annotations
 
-import io
 import json
 import math
 import os
-import ssl
-import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipfile
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -80,9 +76,11 @@ ADMIN_LEVEL_LABELS: Dict[str, str] = {
     "cun": "村/社区",
 }
 
-SUPPORTED_FORMATS = ("gson", "shp", "kml", "gpkg", "svg")
+SUPPORTED_FORMATS = ("geojson", "shp", "kml", "gpkg", "svg")
+# Legacy alias kept so existing users of `--format gson` keep working.
+FORMAT_ALIASES = {"gson": "geojson"}
 FORMAT_EXTENSIONS = {
-    "gson": "geojson",
+    "geojson": "geojson",
     "shp": "zip",
     "kml": "kml",
     "gpkg": "gpkg",
@@ -101,19 +99,6 @@ class AdminApiError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Network helpers
 # ---------------------------------------------------------------------------
-
-
-def _no_proxy_ssl_context() -> ssl.SSLContext:
-    """Return an SSL context that does NOT honour HTTP(S)_PROXY.
-
-    The rui duobao API lives in mainland China. The user's VPN is unstable,
-    so we connect directly by default. ``RUIDUOBAO_USE_PROXY=1`` opts back
-    in to the system proxy.
-    """
-    if os.environ.get("RUIDUOBAO_USE_PROXY") == "1":
-        return ssl.create_default_context()
-    ctx = ssl.create_default_context()
-    return ctx
 
 
 def _build_opener() -> urllib.request.OpenerDirector:
@@ -400,22 +385,23 @@ def get_geojson(code: str, year: int = DEFAULT_YEAR) -> Dict[str, Any]:
 
 def download_vector(
     code: str,
-    fmt: str = "gson",
+    fmt: str = "geojson",
     year: int = DEFAULT_YEAR,
 ) -> bytes:
-    """Download the raw vector file (``gson``/``shp``/``kml``/``gpkg``/``svg``).
+    """Download the raw vector file (``geojson``/``shp``/``kml``/``gpkg``/``svg``).
 
-    For ``gson`` we still go through ``/getGsonDB`` -> ``/vectordata/...``
-    because the server's ``/downloadVector?format=gson`` may differ in
+    For ``geojson`` we still go through ``/getGsonDB`` -> ``/vectordata/...``
+    because the server's ``/downloadVector?format=geojson`` may differ in
     structure. For other formats we use ``/downloadVector/:code`` directly.
     """
-    fmt = (fmt or "gson").lower()
+    fmt = (fmt or "geojson").lower()
+    fmt = FORMAT_ALIASES.get(fmt, fmt)  # backward compat: gson -> geojson
     if fmt not in SUPPORTED_FORMATS:
         raise AdminApiError(
-            f"Unsupported format {fmt!r}; supported={SUPPORTED_FORMATS}"
+            f"Unsupported format {fmt!r}; supported={list(SUPPORTED_FORMATS)}"
         )
 
-    if fmt == "gson":
+    if fmt == "geojson":
         # The SSE/getGsonDB pipeline already returns clean GeoJSON.
         return json.dumps(
             get_geojson(code, year=year), ensure_ascii=False
@@ -673,6 +659,13 @@ def resolve_admin(
     Returns a dict with: ``name``, ``code``, ``level``, ``province``,
     ``city``, ``bbox_wgs84``, ``bbox_wgs84_expanded``, ``area_km2``,
     ``area_km2_expanded``, ``year``, ``source``.
+
+    When ``fetch_geojson=True`` (default) and the upstream API has no
+    vector boundary for the requested code (typical for 9/12-digit 乡/村
+    codes), the function still returns the resolved metadata — the
+    ``bbox_*`` and ``area_*`` fields are ``None`` and an extra
+    ``vector_available: false`` field is added so callers can detect
+    the partial result without it being a hard error.
     """
     if not name and not code:
         raise AdminApiError("resolve_admin requires --name or --code")
@@ -681,9 +674,13 @@ def resolve_admin(
 
     chosen: Optional[Dict[str, Any]] = None
     if code:
-        # Direct path: we still need name / province / city. Fetch the
-        # GeoJSON once and pull them from properties (the server puts
-        # 地级 / 省级 etc. there for the 6 / 9 / 12 digit codes).
+        # Direct path: we still need name / province / city. Cheap format
+        # check first — anything outside the 6/9/12-digit admin-code shape
+        # is definitely bogus and we can fail fast without an API call.
+        if not code.isdigit() or len(code) not in (6, 9, 12):
+            raise AdminApiError(
+                f"Invalid admin code {code!r}: expected 6/9/12 digits"
+            )
         chosen = {
             "name": name or "",
             "code": code,
@@ -735,18 +732,31 @@ def resolve_admin(
         raise AdminApiError(f"Could not resolve a code for name={name!r}")
 
     # Now fetch the actual GeoJSON so we have a real bbox + (if missing)
-    # name / province / city from the server's properties.
+    # name / province / city from the server's properties. Town / village
+    # codes often have no vector boundary — we surface that as a partial
+    # result, not a hard error.
+    geojson: Optional[Dict[str, Any]] = None
+    vector_available = True
     if fetch_geojson:
         try:
             geojson = get_geojson(chosen["code"], year=year)
         except AdminApiError as e:
-            # Town/village codes have no gsonDB; fall back to the
-            # downloadVector pipeline, which at least confirms the code exists.
-            raise AdminApiError(
-                f"Vector not available for {chosen['code']}: {e}"
-            ) from e
-    else:
-        geojson = None
+            geojson = None
+            vector_available = False
+            # Stash the underlying reason so the caller can see it.
+            chosen["_vector_error"] = str(e)
+            # If we have no other metadata (caller gave only --code and
+            # nothing else resolved), treat this as "no such admin code"
+            # rather than "real code without vector" — the user almost
+            # certainly mistyped.
+            if (
+                not chosen.get("name")
+                and not chosen.get("province")
+                and not chosen.get("city")
+            ):
+                raise AdminApiError(
+                    f"No admin record matches code={chosen['code']!r}: {e}"
+                ) from e
 
     if geojson:
         # Fill in name / province / city from the GeoJSON properties when
@@ -781,7 +791,7 @@ def resolve_admin(
     if bbox is not None and expand_km > 0:
         bbox_expanded = expand_bbox_km(bbox, expand_km)
 
-    return {
+    result: Dict[str, Any] = {
         "name": chosen.get("name", name or ""),
         "code": chosen.get("code", code or ""),
         "level": normalize_admin_level(chosen.get("level")),
@@ -795,7 +805,11 @@ def resolve_admin(
         "area_km2_expanded": (
             round(bbox_area_km2(bbox_expanded), 3) if bbox_expanded else None
         ),
+        "vector_available": vector_available,
     }
+    if not vector_available and chosen.get("_vector_error"):
+        result["vector_error"] = chosen["_vector_error"]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -852,6 +866,8 @@ __all__ = [
     "BASE_URL",
     "DEFAULT_YEAR",
     "SUPPORTED_FORMATS",
+    "FORMAT_EXTENSIONS",
+    "FORMAT_ALIASES",
     "AdminApiError",
     "expand_bbox_km",
     "bbox_area_km2",
