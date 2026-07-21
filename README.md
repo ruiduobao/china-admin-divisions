@@ -3,8 +3,8 @@
 Download Chinese administrative-division vector data (province / city /
 county / town / village) from the public **map.ruiduobao.com** API.
 
-> 全部用 Python 标准库实现，无第三方依赖；支持 GeoJSON / Shapefile / KML
-> / GeoPackage / SVG 五种格式输出；无需任何凭据。
+> 全部用 Python 标准库实现，无第三方依赖（PNG 渲染可选 Pillow）；支持 GeoJSON /
+> Shapefile / KML / GeoPackage / SVG / PNG（纯形状，无文字）六种格式输出；无需任何凭据。
 
 ## Quickstart
 

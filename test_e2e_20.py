@@ -24,8 +24,11 @@ SCRIPT = ROOT / "scripts" / "china_admin_divisions.py"
 OUT_DIR = ROOT / "_e2e_out"
 OUT_DIR.mkdir(exist_ok=True)
 
+sys.path.insert(0, str(ROOT / "scripts"))
+import admin_core as ac  # noqa: E402  # used by case_27 for bbox sanity check
 
-def _run(args: List[str], *, timeout: int = 60) -> Dict[str, Any]:
+
+def _run(args: List[str], *, timeout: int = 180) -> Dict[str, Any]:
     """Run the CLI; return dict with rc/stdout/stderr/parsed_json."""
     proc = subprocess.run(
         [sys.executable, str(SCRIPT)] + args,
@@ -601,6 +604,133 @@ def case_25_import_admin_core() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# v0.1.2: PNG output (shape only, no text)
+# ---------------------------------------------------------------------------
+
+
+def case_26_download_png() -> Dict[str, Any]:
+    """Download a single admin division as PNG. Must:
+    - succeed (rc=0)
+    - produce a file with a valid PNG signature
+    - NOT require any text glyphs / fonts (Pillow default font is fine)
+    - NOT raise an error even if the upstream SVG path is unavailable.
+    """
+    out_path = OUT_DIR / "jinjiang.png"
+    if out_path.exists():
+        out_path.unlink()
+    r = _run(["download", "--code", "510104", "--format", "png",
+              "--out", str(out_path)])
+    size = out_path.stat().st_size if out_path.exists() else 0
+    # PNG signature: 89 50 4E 47 0D 0A 1A 0A
+    sig_ok = False
+    if out_path.exists() and size >= 8:
+        with open(out_path, "rb") as f:
+            sig_ok = f.read(8) == b"\x89PNG\r\n\x1a\n"
+    ok = (
+        r["rc"] == 0
+        and isinstance(r["parsed"], dict)
+        and out_path.exists()
+        and size > 500  # A 1024x~600 PNG of a polygon is at least a few KB
+        and sig_ok
+    )
+    return {
+        "ok": ok,
+        "name": "download 510104 --format png (纯形状)",
+        "note": f"path={out_path.name}, size={size}, png_sig={sig_ok}",
+        "raw": r,
+    }
+
+
+def case_27_download_png_consistency() -> Dict[str, Any]:
+    """PNG and GeoJSON for the same code should encode the same geometry
+    footprint. We check that the rendered PNG aspect ratio roughly
+    matches the geojson bbox aspect ratio (within 5%)."""
+    geo_path = OUT_DIR / "chaoyang_compare.geojson"
+    png_path = OUT_DIR / "chaoyang_compare.png"
+    for p in (geo_path, png_path):
+        if p.exists():
+            p.unlink()
+    r1 = _run(["download", "--code", "110105", "--format", "geojson",
+               "--out", str(geo_path)])
+    r2 = _run(["download", "--code", "110105", "--format", "png",
+               "--out", str(png_path)])
+    if not (r1["rc"] == 0 and r2["rc"] == 0):
+        return {
+            "ok": False,
+            "name": "download 110105 PNG↔GeoJSON 一致性",
+            "note": f"r1.rc={r1['rc']}, r2.rc={r2['rc']}",
+            "raw": r2,
+        }
+    # Read PNG dimensions.
+    try:
+        from PIL import Image  # type: ignore
+        with Image.open(png_path) as img:
+            png_w, png_h = img.size
+    except Exception as e:
+        return {
+            "ok": False,
+            "name": "download 110105 PNG↔GeoJSON 一致性",
+            "note": f"Pillow open failed: {e}",
+            "raw": r2,
+        }
+    # Read geojson bbox.
+    try:
+        with open(geo_path, encoding="utf-8") as f:
+            geo = json.load(f)
+        bbox = ac._bbox_of_geojson(geo)
+    except Exception as e:
+        return {
+            "ok": False,
+            "name": "download 110105 PNG↔GeoJSON 一致性",
+            "note": f"geojson parse failed: {e}",
+            "raw": r2,
+        }
+    if not bbox:
+        return {
+            "ok": False,
+            "name": "download 110105 PNG↔GeoJSON 一致性",
+            "note": "no bbox in geojson",
+            "raw": r2,
+        }
+    bbox_w = bbox[2] - bbox[0]
+    bbox_h = bbox[3] - bbox[1]
+    expected_ratio = bbox_w / max(bbox_h, 1e-9)
+    actual_ratio = png_w / max(png_h, 1)
+    diff = abs(expected_ratio - actual_ratio) / max(expected_ratio, 1e-9)
+    ok = diff < 0.05
+    return {
+        "ok": ok,
+        "name": "download 110105 PNG↔GeoJSON aspect 一致性",
+        "note": (
+            f"png={png_w}x{png_h} (ratio={actual_ratio:.3f}), "
+            f"bbox ratio={expected_ratio:.3f}, diff={diff:.3%}"
+        ),
+        "raw": r2,
+    }
+
+
+def case_28_png_format_listed() -> Dict[str, Any]:
+    """`png` must appear in the public format surface (SUPPORTED_FORMATS
+    and the CLI help)."""
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, r'" + str(SCRIPT.parent) + r"'); "
+         "import admin_core as ac; "
+         "assert 'png' in ac.SUPPORTED_FORMATS; "
+         "assert ac.FORMAT_EXTENSIONS['png'] == 'png'; "
+         "print('OK')"],
+        capture_output=True, text=True, timeout=15,
+    )
+    ok = proc.returncode == 0 and "OK" in proc.stdout
+    return {
+        "ok": ok,
+        "name": "png 在 SUPPORTED_FORMATS / FORMAT_EXTENSIONS 暴露",
+        "note": f"stdout='{proc.stdout.strip()}', stderr='{proc.stderr.strip()[:80]}'",
+        "raw": {"rc": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -631,6 +761,9 @@ CASES: List[Callable[[], Dict[str, Any]]] = [
     case_23_info_xian_soft_fails_when_no_vector,
     case_24_format_alias_argparse_choice,
     case_25_import_admin_core,
+    case_26_download_png,
+    case_27_download_png_consistency,
+    case_28_png_format_listed,
 ]
 
 

@@ -76,7 +76,7 @@ ADMIN_LEVEL_LABELS: Dict[str, str] = {
     "cun": "村/社区",
 }
 
-SUPPORTED_FORMATS = ("geojson", "shp", "kml", "gpkg", "svg")
+SUPPORTED_FORMATS = ("geojson", "shp", "kml", "gpkg", "svg", "png")
 # Legacy alias kept so existing users of `--format gson` keep working.
 FORMAT_ALIASES = {"gson": "geojson"}
 FORMAT_EXTENSIONS = {
@@ -85,7 +85,14 @@ FORMAT_EXTENSIONS = {
     "kml": "kml",
     "gpkg": "gpkg",
     "svg": "svg",
+    "png": "png",
 }
+# PNG rendering defaults.
+PNG_DEFAULT_SIZE = 1024            # pixels on the longer side
+PNG_FILL_COLOR = (210, 232, 255)   # light blue
+PNG_STROKE_COLOR = (50, 90, 160)   # darker blue
+PNG_BG_COLOR = (255, 255, 255)     # white background
+PNG_STROKE_WIDTH = 1               # pixels (scaled with image size)
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -383,6 +390,131 @@ def get_geojson(code: str, year: int = DEFAULT_YEAR) -> Dict[str, Any]:
     return _json_or_error(body, url)
 
 
+# ---------------------------------------------------------------------------
+# PNG rendering (shape only, no text)
+# ---------------------------------------------------------------------------
+
+
+def _project_ring(
+    ring: List[List[float]],
+    bbox: Tuple[float, float, float, float],
+    width: int,
+    height: int,
+) -> List[Tuple[float, float]]:
+    """Project a GeoJSON [lon, lat] ring to pixel (x, y) coordinates.
+
+    Preserves aspect ratio by padding the shorter axis, centred.
+    """
+    minx, miny, maxx, maxy = bbox
+    span_lon = max(maxx - minx, 1e-9)
+    span_lat = max(maxy - miny, 1e-9)
+    # Choose a uniform scale so the bbox fits inside width x height, then
+    # centre the result. Y is flipped because image origin is top-left.
+    scale = min(width / span_lon, height / span_lat)
+    px_w = span_lon * scale
+    px_h = span_lat * scale
+    pad_x = (width - px_w) / 2.0
+    pad_y = (height - px_h) / 2.0
+    out: List[Tuple[float, float]] = []
+    for point in ring:
+        lon, lat = point[0], point[1]
+        x = pad_x + (lon - minx) * scale
+        y = pad_y + (maxy - lat) * scale  # invert
+        out.append((x, y))
+    return out
+
+
+def _iter_polygon_rings(geometry: Dict[str, Any]):
+    """Yield (outer_ring, inner_rings) for Polygon / MultiPolygon.
+
+    Inner rings (holes) are returned so the caller can punch them out by
+    re-drawing with the background colour.
+    """
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates") or []
+    if gtype == "Polygon":
+        if not coords:
+            return
+        yield coords[0], list(coords[1:])
+    elif gtype == "MultiPolygon":
+        for poly in coords:
+            if not poly:
+                continue
+            yield poly[0], list(poly[1:])
+
+
+def render_geojson_to_png(
+    geojson: Dict[str, Any],
+    *,
+    size: int = PNG_DEFAULT_SIZE,
+    fill_color: Tuple[int, int, int] = PNG_FILL_COLOR,
+    stroke_color: Tuple[int, int, int] = PNG_STROKE_COLOR,
+    bg_color: Tuple[int, int, int] = PNG_BG_COLOR,
+    stroke_width: int = PNG_STROKE_WIDTH,
+) -> bytes:
+    """Render a GeoJSON FeatureCollection to PNG bytes.
+
+    The output contains **only the polygon shapes** — no text labels, no
+    legend, no graticule. Intended as a quick visual for users who don't
+    need full GIS tooling.
+
+    MultiPolygon features, polygon holes, and a wide range of bbox aspect
+    ratios are all handled. Requires Pillow at runtime; raises a clear
+    ``AdminApiError`` if Pillow is not installed.
+    """
+    try:
+        from PIL import Image, ImageDraw  # type: ignore
+    except ImportError as e:
+        raise AdminApiError(
+            "PNG output requires Pillow. Install with: pip install Pillow"
+        ) from e
+
+    bbox = _bbox_of_geojson(geojson)
+    if not bbox:
+        raise AdminApiError(
+            "Cannot render PNG: geojson has no drawable geometry"
+        )
+
+    # Choose width / height that fits the bbox aspect ratio.
+    minx, miny, maxx, maxy = bbox
+    span_lon = maxx - minx
+    span_lat = maxy - miny
+    if span_lon >= span_lat:
+        width = size
+        height = max(1, int(round(size * span_lat / span_lon)))
+    else:
+        height = size
+        width = max(1, int(round(size * span_lon / span_lat)))
+
+    img = Image.new("RGB", (width, height), bg_color)
+    draw = ImageDraw.Draw(img)
+    # Scale stroke width with image size so 1024 and 512 look similar.
+    sw = max(1, int(round(stroke_width * width / PNG_DEFAULT_SIZE)))
+
+    features = geojson.get("features") or []
+    for feat in features:
+        geom = feat.get("geometry") or {}
+        for outer, holes in _iter_polygon_rings(geom):
+            if len(outer) < 3:
+                continue
+            outer_px = _project_ring(outer, bbox, width, height)
+            draw.polygon(outer_px, fill=fill_color, outline=stroke_color)
+            for hole in holes:
+                if len(hole) < 3:
+                    continue
+                hole_px = _project_ring(hole, bbox, width, height)
+                # Punch out holes with the background colour.
+                draw.polygon(hole_px, fill=bg_color, outline=stroke_color)
+            # Trace the outline again so the outer ring is visible on top
+            # of the hole punches.
+            draw.line(outer_px + [outer_px[0]], fill=stroke_color, width=sw)
+
+    import io as _io  # local import to keep top-level clean
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def download_vector(
     code: str,
     fmt: str = "geojson",
@@ -406,6 +538,11 @@ def download_vector(
         return json.dumps(
             get_geojson(code, year=year), ensure_ascii=False
         ).encode("utf-8")
+
+    if fmt == "png":
+        # Render on the client: fetch the GeoJSON and rasterise. No text
+        # labels, no legend — just the shapes.
+        return render_geojson_to_png(get_geojson(code, year=year))
 
     path = f"/downloadVector/{urllib.parse.quote(code)}"
     status, _, body = _ruiduobao_request(
@@ -877,6 +1014,8 @@ __all__ = [
     "get_geojson",
     "get_gson_db",
     "download_vector",
+    "render_geojson_to_png",
+    "PNG_DEFAULT_SIZE",
     "list_cities",
     "list_counties",
     "list_towns",

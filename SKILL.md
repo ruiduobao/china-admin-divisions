@@ -1,16 +1,16 @@
 ---
 name: china-admin-divisions
 display_name: 中国行政区划下载
-version: 0.1.1
+version: 0.1.2
 author: Mavis
 description: |
   Download Chinese administrative-division vector data (province / city /
   county / town / village) from the public map.ruiduobao.com API.
-  Supports GeoJSON / Shapefile / KML / GeoPackage / SVG, tree-style
-  drill-down, single + batch download, bbox and area calculation with a
-  1 km buffer. No credentials required.
+  Supports GeoJSON / Shapefile / KML / GeoPackage / SVG / PNG (shape-only),
+  tree-style drill-down, single + batch download, bbox and area
+  calculation with a 1 km buffer. No credentials required.
 runtime: python>=3.9
-tags: [gis, china, admin-divisions, vector, shapefile, geojson]
+tags: [gis, china, admin-divisions, vector, shapefile, geojson, png, svg]
 ---
 
 # 中国行政区划下载（china-admin-divisions）
@@ -72,6 +72,13 @@ python scripts/china_admin_divisions.py download-children \
 | `kml` | `.kml` | Google Earth |
 | `gpkg` | `.gpkg` | GeoPackage，OGC 标准 |
 | `svg` | `.svg` | 矢量图 |
+| `png` | `.png` | **纯形状 PNG**（无任何文字标注），需要 Pillow |
+
+不同用户群体怎么选：
+- **GIS / 数据分析**：`geojson` 或 `shp`（最通用，QGIS / ArcGIS / GeoPandas 直接吃）
+- **前端可视化 / Web 制图**：`svg`（矢量缩放无损，可在浏览器内交互）
+- **日常看图 / 报告插图**：`png`（位图，PPT / Word 直接贴，**纯形状不标文字**）
+- **OGC 互操作 / 数据库**：`gpkg`
 
 ## Permissions
 
