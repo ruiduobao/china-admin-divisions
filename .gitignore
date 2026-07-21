@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+_e2e_out/
+*.zip
+*.geojson
+*.kml
+*.gpkg
+*.svg
+.venv/
+.env
+.DS_Store
