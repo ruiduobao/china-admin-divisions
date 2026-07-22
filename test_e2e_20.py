@@ -731,6 +731,146 @@ def case_28_png_format_listed() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# v0.1.3: SSRF guard (ClawHub / NVIDIA SkillSpector remediation)
+# ---------------------------------------------------------------------------
+
+
+def _run_inline_py(body: str, *, timeout: int = 15) -> Dict[str, Any]:
+    """Write the inline Python body to a temp file and run it. Avoids
+    the PowerShell + subprocess -c quoting nightmare for cases that
+    need quotes / backslashes."""
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".py", prefix="ssrf_", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("import sys\n")
+            f.write(f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n")
+            f.write(body)
+        proc = subprocess.run(
+            [sys.executable, path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return {
+        "rc": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
+
+
+def case_29_ssrf_block_disallowed_host() -> Dict[str, Any]:
+    """Absolute URLs whose host is not in the allowlist must raise
+    AdminApiError without any network call."""
+    body = (
+        "import admin_core as ac\n"
+        "from admin_core import AdminApiError\n"
+        "try:\n"
+        "    ac._ruiduobao_request('http://attacker.example.com/x')\n"
+        "except AdminApiError as e:\n"
+        "    print('BLOCKED', str(e)[:60])\n"
+        "except Exception as e:\n"
+        "    print('WRONG', type(e).__name__, str(e)[:60])\n"
+        "else:\n"
+        "    print('LEAK')\n"
+    )
+    r = _run_inline_py(body)
+    ok = r["rc"] == 0 and "BLOCKED" in r["stdout"]
+    return {
+        "ok": ok,
+        "name": "SSRF: 绝对 URL 指向未授权 host 被拦截",
+        "note": f"stdout='{r['stdout'].strip()}', stderr='{r['stderr'].strip()[:80]}'",
+        "raw": r,
+    }
+
+
+def case_30_ssrf_block_bad_scheme() -> Dict[str, Any]:
+    """Non-http(s) schemes (file://, gopher://, ftp://, etc.) must be
+    rejected with an explicit "unsupported scheme" error, not just
+    silently fail downstream."""
+    body = (
+        "import admin_core as ac\n"
+        "from admin_core import AdminApiError\n"
+        "try:\n"
+        "    ac._ruiduobao_request('file:///etc/passwd')\n"
+        "except AdminApiError as e:\n"
+        "    msg = str(e)\n"
+        "    if 'unsupported scheme' in msg and 'file' in msg:\n"
+        "        print('BLOCKED', msg[:80])\n"
+        "    else:\n"
+        "        print('WRONG_REASON', msg[:80])\n"
+        "except Exception as e:\n"
+        "    print('WRONG_EXCEPTION', type(e).__name__, str(e)[:60])\n"
+        "else:\n"
+        "    print('LEAK')\n"
+    )
+    r = _run_inline_py(body)
+    ok = r["rc"] == 0 and "BLOCKED" in r["stdout"]
+    return {
+        "ok": ok,
+        "name": "SSRF: file:// 等非 http(s) scheme 显式拒绝",
+        "note": f"stdout='{r['stdout'].strip()}', stderr='{r['stderr'].strip()[:80]}'",
+        "raw": r,
+    }
+
+
+def case_31_ssrf_extra_hosts_env() -> Dict[str, Any]:
+    """``RUIDUOBAO_EXTRA_HOSTS`` must extend the allowlist (for self-hosted
+    mirrors). With the env unset, an extra host stays blocked."""
+    body = (
+        "import os, admin_core as ac\n"
+        "os.environ.pop('RUIDUOBAO_EXTRA_HOSTS', None)\n"
+        "ok_default = ('mirror.example.com' in ac._allowed_hosts())\n"
+        "os.environ['RUIDUOBAO_EXTRA_HOSTS'] = 'mirror.example.com,  CDN.Example.COM  '\n"
+        "hosts = ac._allowed_hosts()\n"
+        "ok_extra = ('mirror.example.com' in hosts) and ('cdn.example.com' in hosts)\n"
+        "print('DEFAULT_HAS_EXTRA' if ok_default else 'OK_DEFAULT',\n"
+        "      'EXTRA_ADDED' if ok_extra else 'EXTRA_FAIL',\n"
+        "      'lowercased=' + str('cdn.example.com' in hosts))\n"
+    )
+    r = _run_inline_py(body)
+    ok = (
+        r["rc"] == 0
+        and "OK_DEFAULT" in r["stdout"]
+        and "EXTRA_ADDED" in r["stdout"]
+    )
+    return {
+        "ok": ok,
+        "name": "SSRF: RUIDUOBAO_EXTRA_HOSTS 可扩展 allowlist（大小写不敏感）",
+        "note": f"stdout='{r['stdout'].strip()}', stderr='{r['stderr'].strip()[:80]}'",
+        "raw": r,
+    }
+
+
+def case_32_ssrf_attack_blocked_for_real() -> Dict[str, Any]:
+    """Simulate the upstream ``filepath`` field being attacker-controlled
+    (a real attack vector: the API returns a hostile URL)."""
+    body = (
+        "import admin_core as ac\n"
+        "from admin_core import AdminApiError\n"
+        "try:\n"
+        "    ac._ruiduobao_request('https://evil.example.org/x.geojson')\n"
+        "except AdminApiError as e:\n"
+        "    print('BLOCKED', 'evil.example.org' in str(e))\n"
+        "except Exception as e:\n"
+        "    print('WRONG', type(e).__name__)\n"
+        "else:\n"
+        "    print('LEAK')\n"
+    )
+    r = _run_inline_py(body)
+    ok = r["rc"] == 0 and "BLOCKED" in r["stdout"] and "True" in r["stdout"]
+    return {
+        "ok": ok,
+        "name": "SSRF: 模拟上游 filepath 注入 evil host 被拦截",
+        "note": f"stdout='{r['stdout'].strip()}', stderr='{r['stderr'].strip()[:80]}'",
+        "raw": r,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -764,6 +904,10 @@ CASES: List[Callable[[], Dict[str, Any]]] = [
     case_26_download_png,
     case_27_download_png_consistency,
     case_28_png_format_listed,
+    case_29_ssrf_block_disallowed_host,
+    case_30_ssrf_block_bad_scheme,
+    case_31_ssrf_extra_hosts_env,
+    case_32_ssrf_attack_blocked_for_real,
 ]
 
 

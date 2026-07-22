@@ -29,6 +29,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://map.ruiduobao.com"
+# Hostnames the client is allowed to contact. The default is the
+# canonical upstream; self-hosted mirrors can be added via
+# ``RUIDUOBAO_EXTRA_HOSTS`` (comma-separated). Anything outside this
+# allowlist raises ``AdminApiError`` — this blocks the SSRF primitive
+# flagged by ClawHub / NVIDIA SkillSpector: the upstream ``filepath``
+# envelope field can no longer redirect the client to an arbitrary
+# host.
+ALLOWED_HOSTS = ("map.ruiduobao.com",)
 DEFAULT_YEAR = 2023
 DEFAULT_LIMIT = 10
 DEFAULT_EXPAND_KM = 1.0
@@ -124,6 +132,15 @@ def _build_opener() -> urllib.request.OpenerDirector:
 _OPENER = _build_opener()
 
 
+def _allowed_hosts() -> Tuple[str, ...]:
+    """Effective host allowlist: defaults + ``RUIDUOBAO_EXTRA_HOSTS`` env."""
+    extra = os.environ.get("RUIDUOBAO_EXTRA_HOSTS", "").strip()
+    if not extra:
+        return ALLOWED_HOSTS
+    extras = tuple(h.strip().lower() for h in extra.split(",") if h.strip())
+    return ALLOWED_HOSTS + extras
+
+
 def _ruiduobao_request(
     path: str,
     params: Optional[Dict[str, Any]] = None,
@@ -140,13 +157,36 @@ def _ruiduobao_request(
     caller decides what to do with the body (json / raw bytes / stream).
     """
     if path.startswith("http://") or path.startswith("https://"):
-        # Caller supplied a full URL (e.g. an absolute filepath from
-        # getGsonDB). Honour it; params, if any, are appended as a query.
+        # Caller supplied a full URL. Validate scheme + host against the
+        # allowlist before issuing the request — this is the SSRF guard.
+        parsed = urllib.parse.urlparse(path)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower()
+        if scheme not in ("http", "https"):
+            raise AdminApiError(
+                f"Refusing request: unsupported scheme {scheme!r} in {path!r}"
+            )
+        allowed = _allowed_hosts()
+        if host not in allowed:
+            raise AdminApiError(
+                f"Refusing request: host {host!r} is not in the allowlist "
+                f"{list(allowed)}. Set RUIDUOBAO_EXTRA_HOSTS to extend it."
+            )
         url = path
         if params:
             clean = {k: str(v) for k, v in params.items() if v is not None}
             sep = "&" if "?" in url else "?"
             url = url + sep + urllib.parse.urlencode(clean)
+    elif "://" in path:
+        # Path contains a scheme separator but isn't http(s) — this is
+        # almost certainly an attacker trying to coerce an outbound
+        # request to file://, gopher://, ftp://, etc. Reject explicitly
+        # instead of silently falling through to the relative-path branch
+        # (which would just produce a malformed URL and fail later).
+        scheme = path.split("://", 1)[0].lower()
+        raise AdminApiError(
+            f"Refusing request: unsupported scheme {scheme!r} in {path!r}"
+        )
     else:
         url = BASE_URL + path
         if params:
@@ -1001,6 +1041,7 @@ def list_children(
 
 __all__ = [
     "BASE_URL",
+    "ALLOWED_HOSTS",
     "DEFAULT_YEAR",
     "SUPPORTED_FORMATS",
     "FORMAT_EXTENSIONS",

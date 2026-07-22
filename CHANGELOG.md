@@ -3,6 +3,29 @@
 All notable changes to `china-admin-divisions` are documented here.
 The skill follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.3] — 2026-07-22
+
+### Security
+- **SSRF guard (ClawHub / NVIDIA SkillSpector remediation).** The low-level
+  HTTP helper now refuses any absolute URL whose **scheme is not http(s)**
+  or whose **host is not in the allowlist** — fixing the
+  "Context-Inappropriate Capability" Medium finding (93% confidence)
+  raised by SkillSpector. The previous code accepted attacker-supplied
+  absolute URLs from the upstream `getGsonDB` envelope's `filepath`
+  field, which under a compromised upstream could redirect the client
+  to an arbitrary host. Now any `https://evil.example.org/...` returned
+  by a hostile envelope is rejected with `AdminApiError("Refusing
+  request: host 'evil.example.org' is not in the allowlist ...")`.
+- Self-hosted mirrors can extend the allowlist via the env var
+  `RUIDUOBAO_EXTRA_HOSTS` (comma-separated, lower-cased automatically).
+  Defaults stay restricted to `map.ruiduobao.com`.
+- New tests `case_29` / `case_30` / `case_31` / `case_32` cover: hostile
+  host, non-http scheme, env-driven allowlist, and an end-to-end
+  upstream-filepath-injection scenario.
+
+### Notes
+- Total tests: 28 → 32. All 32 pass in ~31 s.
+
 ## [0.1.2] — 2026-07-21
 
 ### Added
