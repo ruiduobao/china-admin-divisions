@@ -1,10 +1,40 @@
-# china-admin-divisions · 中国行政区划下载
+﻿# china-admin-divisions · 中国行政区划下载
 
 Download Chinese administrative-division vector data (province / city /
 county / town / village) from the public **map.ruiduobao.com** API.
 
 > 全部用 Python 标准库实现，无第三方依赖（PNG 渲染可选 Pillow）；支持 GeoJSON /
 > Shapefile / KML / GeoPackage / SVG / PNG（纯形状，无文字）六种格式输出；无需任何凭据。
+
+
+## Installation
+
+### Cross-platform (skills.sh · 50+ AI agents)
+
+```bash
+npx skills add ruiduobao/china-admin-divisions -g
+```
+
+Works with: Claude Code, Cursor, Codex, GitHub Copilot, Windsurf, Gemini CLI, Cline, AMP, VS Code, Zed, OpenClaw, and more.
+
+### Claude Code (plugin marketplace)
+
+```bash
+/plugin marketplace add ruiduobao/claude-plugins
+/plugin install china-admin-divisions@ruiduobao-geo-skills
+```
+
+### ClawHub (OpenClaw)
+
+```bash
+clawhub install ruiduobao/china-admin-divisions
+```
+
+### Manual
+
+```bash
+git clone https://github.com/ruiduobao/china-admin-divisions.git
+```
 
 ## Quickstart
 
