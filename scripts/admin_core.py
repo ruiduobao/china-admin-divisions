@@ -865,6 +865,17 @@ def resolve_admin(
             "province": province or "",
             "city": city or "",
         }
+        # When only --code is given (no --name), look up the name from the
+        # search API so downstream output isn't missing the name.  This also
+        # covers the fetch_geojson=False case where properties would never
+        # be consulted.
+        if not chosen["name"]:
+            try:
+                search_results = _ruiduobao_search(code, limit=1)
+                if search_results:
+                    chosen["name"] = search_results[0].get("name", "")
+            except AdminApiError:
+                pass
     else:
         # Path 1: cheap tree lookup when level is shi/xian and we have
         # province+city(county). Path 2: full-text search otherwise.
