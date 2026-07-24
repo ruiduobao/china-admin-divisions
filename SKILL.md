@@ -1,7 +1,7 @@
 ---
 name: china-admin-divisions
 display_name: 中国行政区划下载
-version: 0.1.3
+version: 0.1.5
 author: Mavis
 description: |
   Download Chinese administrative-division vector data (province / city /
