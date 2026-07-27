@@ -118,8 +118,20 @@ def _common_admin_args(p: argparse.ArgumentParser) -> None:
 
 
 def cmd_info(args: argparse.Namespace) -> int:
+    # Backward-compat: allow positional name/code (e.g. `info 510104` or
+    # `info 锦江`) as a shortcut.
+    pos = getattr(args, "pos_name", None) or getattr(args, "pos_code", None)
+    if pos and not args.name and not args.code:
+        # Heuristic: 6-digit number → code, otherwise treat as name
+        if pos.isdigit() and len(pos) == 6:
+            args.code = pos
+        else:
+            args.name = pos
     if not args.name and not args.code:
-        return _err("Provide --name or --code")
+        return _err(
+            "Provide --name, --code, or a positional name/code "
+            "(e.g. `info 510104` or `info 锦江`)"
+        )
     if args.name and args.code:
         return _err("Pass only one of --name or --code")
     try:
@@ -139,8 +151,18 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 
 def cmd_bbox(args: argparse.Namespace) -> int:
+    # Backward-compat: allow positional name/code (e.g. `bbox 510104` or
+    # `bbox 锦江`) as a shortcut, mirroring the `info` subcommand.
+    if getattr(args, "pos_name", None) and not args.name and not args.code:
+        if args.pos_name.isdigit() and len(args.pos_name) == 6:
+            args.code = args.pos_name
+        else:
+            args.name = args.pos_name
     if not args.name and not args.code:
-        return _err("Provide --name or --code")
+        return _err(
+            "Provide --name, --code, or a positional name/code "
+            "(e.g. `bbox 510104` or `bbox 锦江`)"
+        )
     try:
         meta = ac.resolve_admin(
             name=args.name,
@@ -216,17 +238,21 @@ def cmd_download(args: argparse.Namespace) -> int:
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as f:
         f.write(body)
-    return _emit(
-        {
-            "ok": True,
-            "code": meta["code"],
-            "name": meta["name"],
-            "format": fmt,
-            "path": out_path,
-            "size_bytes": len(body),
-        },
-        as_json=not args.plain,
-    )
+    out = {
+        "ok": True,
+        "code": meta["code"],
+        "name": meta["name"],
+        "format": fmt,
+        "path": out_path,
+        "size_bytes": len(body),
+        "year": args.year,
+    }
+    if args.qa:
+        qa_path = os.path.splitext(out_path)[0] + ".qa.json"
+        with open(qa_path, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+        print(f"QA: {qa_path}", file=sys.stderr)
+    return _emit(out, as_json=not args.plain)
 
 
 def cmd_download_children(args: argparse.Namespace) -> int:
@@ -355,6 +381,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # info
     sp = sub.add_parser("info", help="查询单个区划的元信息（含 bbox、面积）")
+    sp.add_argument("pos_name", nargs="?", default=None,
+                    help="[可选] 区划名称或 6 位编码作为位置参数 "
+                         "（如 `info 510104` 或 `info 锦江`）")
     sp.add_argument("--name", help="区划名称（与 --code 互斥）")
     sp.add_argument("--code", help="区划编码（与 --name 互斥）")
     sp.add_argument("--province")
@@ -369,6 +398,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # bbox
     sp = sub.add_parser("bbox", help="仅显示 bbox 与面积（可指定扩展 km）")
+    sp.add_argument("pos_name", nargs="?", default=None,
+                    help="[可选] 区划名称或 6 位编码作为位置参数 "
+                         "（如 `bbox 510104` 或 `bbox 锦江`）")
     sp.add_argument("--name")
     sp.add_argument("--code")
     sp.add_argument("--province")
@@ -392,6 +424,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--format", choices=list(ac.SUPPORTED_FORMATS) + list(ac.FORMAT_ALIASES),
                     default="geojson")
     sp.add_argument("--out", help="输出文件路径")
+    sp.add_argument("--qa", action="store_true",
+                    help="Write a QA summary JSON next to the output file")
     _common_admin_args(sp)
     sp.set_defaults(func=cmd_download)
 
