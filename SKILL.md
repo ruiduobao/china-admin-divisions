@@ -1,17 +1,6 @@
 ---
-description: 'Download Chinese administrative-division vector data (province / city
-  /
-
-  county / town / village) from the public map.ruiduobao.com API.
-
-  Supports GeoJSON / Shapefile / KML / GeoPackage / SVG / PNG (shape-only),
-
-  tree-style drill-down, single + batch download, bbox and area
-
-  calculation with a 1 km buffer. No credentials required.
-
-  '
 name: china-admin-divisions
+description: 'Download Chinese administrative-division vector data (province / city description: 'Download Chinese administrative-division vector data (province / city /  county / town / village) from the public map.ruiduobao.com API.  Supports GeoJSON / Shapefile / KML / GeoPackage / SVG / PNG (shape-only),  tree-style drill-down, single + batch download, bbox and area  calculation with a 1 km buffer. No credentials required.  '
 ---
 
 # 中国行政区划下载（china-admin-divisions）
